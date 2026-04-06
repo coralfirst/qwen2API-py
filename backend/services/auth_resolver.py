@@ -336,8 +336,157 @@ async def register_qwen_account() -> Optional[Account]:
             return None
 
 async def activate_account(acc: Account) -> bool:
-    """尝试用临时邮箱去收激活邮件并点击链接，由于和 register 基本一致，简略实现"""
-    return False
+    """Open mail.chatgpt.org.uk/{email} in browser, find the Qwen activation link,
+    click it, then login to get a fresh token. Returns True on success."""
+    log.info(f"[Activate] 开始激活 {acc.email}，打开邮箱页面...")
+    keywords = ("qwen", "verify", "activate", "confirm", "aliyun", "alibaba", "qwenlm")
+    mail_url = f"{MAIL_BASE}/{acc.email}"
+    try:
+        async with _new_browser() as browser:
+            page = await browser.new_page()
+
+            # Step 1: Open the inbox page — use networkidle to wait for SPA AJAX to complete
+            log.info(f"[Activate] 打开收件箱: {mail_url}")
+            try:
+                await page.goto(mail_url, wait_until="networkidle", timeout=30000)
+            except Exception:
+                try:
+                    await page.goto(mail_url, wait_until="domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+            # Extra wait for SPA to render inbox content
+            await asyncio.sleep(6)
+
+            # Step 2: Wait for email list to appear, then click the first email
+            log.info(f"[Activate] 等待收件箱加载...")
+            clicked_email = False
+
+            # Primary: confirmed GPTMail selector
+            for sel in ['#emailList li:first-child', '#emailList li', '[class*="EmailItem"]',
+                        '[class*="email-item"]', '[class*="MailItem"]', '[class*="mail-item"]',
+                        'table tbody tr:first-child', '[role="row"]:first-child']:
+                try:
+                    await page.wait_for_selector(sel, timeout=10000)
+                    el = await page.query_selector(sel)
+                    if el:
+                        await el.click()
+                        await asyncio.sleep(4)
+                        clicked_email = True
+                        log.debug(f"[Activate] 点击邮件项: {sel}")
+                        break
+                except Exception:
+                    pass
+
+            if not clicked_email:
+                # Fallback: look for any clickable element containing Qwen keywords
+                for sel in ['li', 'tr', 'div[class]', '[class*="row"]', '[class*="item"]']:
+                    try:
+                        els = await page.query_selector_all(sel)
+                        for el in (els or [])[:10]:
+                            try:
+                                text = await el.inner_text()
+                                if any(kw in text.lower() for kw in keywords):
+                                    await el.click()
+                                    await asyncio.sleep(4)
+                                    clicked_email = True
+                                    log.debug(f"[Activate] 按关键词点击邮件项: {sel}")
+                                    break
+                            except Exception:
+                                pass
+                        if clicked_email:
+                            break
+                    except Exception:
+                        pass
+
+            # Step 3: Extract activation link — email body is inside #emailFrame iframe
+            js_find_link = """() => {
+                const kws = ['qwen', 'verify', 'activate', 'confirm', 'aliyun', 'alibaba', 'qwenlm'];
+                const links = Array.from(document.querySelectorAll('a[href]'));
+                for (const a of links) {
+                    const href = a.href || '';
+                    const text = (a.textContent || '').toLowerCase();
+                    if (kws.some(k => href.toLowerCase().includes(k))) return href;
+                    if (kws.some(k => text.includes(k)) && href.startsWith('http')) return href;
+                }
+                const html = document.body ? document.body.innerHTML : '';
+                const matches = html.match(/https?:\\/\\/[^"'\\s<>\\\\]+/g) || [];
+                for (const m of matches) {
+                    if (kws.some(k => m.toLowerCase().includes(k))) return m;
+                }
+                return null;
+            }"""
+
+            verify_link = None
+
+            # Primary: read from #emailFrame iframe (GPTMail renders body inside iframe)
+            try:
+                iframe_el = await page.query_selector('#emailFrame')
+                if iframe_el:
+                    await asyncio.sleep(3)  # wait for iframe content to load
+                    frame = await iframe_el.content_frame()
+                    if frame:
+                        verify_link = await frame.evaluate(js_find_link)
+                        if verify_link:
+                            log.debug(f"[Activate] 从 #emailFrame iframe 提取到链接")
+            except Exception as e:
+                log.debug(f"[Activate] iframe 读取失败: {e}")
+
+            # Fallback: search main page
+            if not verify_link:
+                verify_link = await page.evaluate(js_find_link)
+
+            if not verify_link:
+                log.warning(f"[Activate] {acc.email} 邮箱页面未找到激活链接，URL={page.url}")
+                title = await page.title()
+                log.debug(f"[Activate] 页面标题: {title!r}")
+                content = await page.evaluate("document.body ? document.body.innerText.slice(0,400) : ''")
+                log.debug(f"[Activate] 页面内容片段: {content!r}")
+                return False
+
+            log.info(f"[Activate] 找到激活链接: {verify_link[:120]}")
+
+            # Step 4: Visit the activation link
+            try:
+                await page.goto(verify_link, wait_until="networkidle", timeout=30000)
+            except Exception:
+                try:
+                    await page.goto(verify_link, wait_until="domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+            await asyncio.sleep(5)
+            token = await page.evaluate("localStorage.getItem('token')")
+            log.info(f"[Activate] 访问激活链接后 URL={page.url}, token={'有' if token else '无'}")
+
+            # Step 5: If no token yet, try logging in
+            if not token and acc.password:
+                try:
+                    await page.goto(f"{BASE_URL}/auth", wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(3)
+                    li_email = await page.query_selector('input[placeholder*="Email"]')
+                    if li_email:
+                        await li_email.fill(acc.email)
+                    li_pwd = await page.query_selector('input[type="password"]')
+                    if li_pwd:
+                        await li_pwd.fill(acc.password)
+                    li_btn = (await page.query_selector('button:has-text("Log in")') or
+                              await page.query_selector('button[type="submit"]'))
+                    if li_btn:
+                        await li_btn.click()
+                    await asyncio.sleep(8)
+                    token = await page.evaluate("localStorage.getItem('token')")
+                except Exception as e:
+                    log.warning(f"[Activate] 激活后登录异常: {e}")
+
+            if token:
+                acc.token = token
+                acc.valid = True
+                log.info(f"[Activate] {acc.email} 激活成功，token已更新")
+                return True
+            log.warning(f"[Activate] {acc.email} 激活后未能获取token")
+            return False
+    except Exception as e:
+        log.error(f"[Activate] {acc.email} 激活异常: {e}")
+        return False
 
 class AuthResolver:
     """自动登录并提取 Token，在检测到 401 时自动自愈凭证"""
