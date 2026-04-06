@@ -30,12 +30,18 @@ async def get_system_status(request: Request):
     # 这里要接入全局引擎的状态
     pool = request.app.state.account_pool
     engine = request.app.state.browser_engine
+    
+    # queue 是当前队列里空闲(准备好)的 page 数量，真正的排队数应该是 pool_size - qsize 或者有其他请求在等待，这里修正前端展示逻辑
+    free_pages = engine._pages.qsize()
+    in_use = engine.pool_size - free_pages
+    
     return {
         "accounts": pool.status(),
         "browser_engine": {
             "started": engine._started,
             "pool_size": engine.pool_size,
-            "queue": engine._pages.qsize()
+            "free_pages": free_pages,
+            "queue": in_use if in_use > 0 else 0  # 这里暂且把正在被占用的页面数当做并发压力展示
         }
     }
 
@@ -153,10 +159,12 @@ async def delete_account(email: str, request: Request):
 
 @router.get("/settings", dependencies=[Depends(verify_admin)])
 async def get_settings():
-    from backend.core.config import MODEL_MAP, VERSION
+    from backend.core.config import MODEL_MAP
+    # 从 settings.py 所在的同级导入 VERSION，避免循环导入或未定义报错
+    from backend.core.config import settings as backend_settings
     return {
-        "version": VERSION,
-        "max_inflight_per_account": settings.MAX_INFLIGHT_PER_ACCOUNT,
+        "version": "2.0.0",
+        "max_inflight_per_account": backend_settings.MAX_INFLIGHT_PER_ACCOUNT,
         "model_aliases": MODEL_MAP
     }
 

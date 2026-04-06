@@ -29,6 +29,8 @@ class Settings(BaseSettings):
 # 在内存中存储管理的 API Keys（和单文件一样）
 API_KEYS = set(["sk-qwen-default-test-key"])
 
+VERSION = "2.0.0"
+
 settings = Settings()
 
 # 全局映射

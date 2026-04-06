@@ -108,6 +108,7 @@ class BrowserEngine:
         log.info("Browser engine started")
 
     async def _init_pages(self):
+        log.info(f"[Browser] 正在初始化 {self.pool_size} 个并发渲染引擎页面...")
         for i in range(self.pool_size):
             page = await self._browser.new_page()
             try:
@@ -116,7 +117,7 @@ class BrowserEngine:
                 pass
             await asyncio.sleep(0.5)
             self._pages.put_nowait(page)
-            log.info(f"  Page {i+1}/{self.pool_size} ready")
+            log.info(f"  [Browser] Page {i+1}/{self.pool_size} ready (等待接入千问核心数据)")
 
     @staticmethod
     async def _ensure_browser_installed():
