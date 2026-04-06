@@ -12,10 +12,10 @@ def verify_admin(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization.split("Bearer ")[1]
     
-    from backend.core.config import API_KEYS
+    from backend.core.config import API_KEYS, settings as backend_settings
     
     # 允许使用默认管理员 Key (ADMIN_KEY) 或者任何已生成的 API_KEYS 作为管理凭证
-    if token != settings.ADMIN_KEY and token not in API_KEYS:
+    if token != backend_settings.ADMIN_KEY and token not in API_KEYS:
         raise HTTPException(status_code=403, detail="Forbidden: Admin Key Mismatch")
     return token
 
@@ -166,10 +166,13 @@ async def get_settings():
     from backend.core.config import MODEL_MAP
     # 从 settings.py 所在的同级导入 VERSION，避免循环导入或未定义报错
     from backend.core.config import settings as backend_settings
+    
+    # 强制将 dict 转换，确保能被 JSON 序列化
+    safe_map = {k: v for k, v in MODEL_MAP.items()}
     return {
         "version": "2.0.0",
         "max_inflight_per_account": backend_settings.MAX_INFLIGHT_PER_ACCOUNT,
-        "model_aliases": MODEL_MAP
+        "model_aliases": safe_map
     }
 
 @router.put("/settings", dependencies=[Depends(verify_admin)])
