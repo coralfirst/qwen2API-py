@@ -11,7 +11,11 @@ def verify_admin(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization.split("Bearer ")[1]
-    if token != settings.ADMIN_KEY:
+    
+    from backend.core.config import API_KEYS
+    
+    # 允许使用默认管理员 Key (ADMIN_KEY) 或者任何已生成的 API_KEYS 作为管理凭证
+    if token != settings.ADMIN_KEY and token not in API_KEYS:
         raise HTTPException(status_code=403, detail="Forbidden: Admin Key Mismatch")
     return token
 
@@ -185,15 +189,17 @@ async def get_keys():
 
 @router.post("/keys", dependencies=[Depends(verify_admin)])
 async def generate_key():
-    from backend.core.config import API_KEYS
+    from backend.core.config import API_KEYS, save_api_keys
     import uuid
     new_key = f"sk-qwen-{uuid.uuid4().hex[:20]}"
     API_KEYS.add(new_key)
+    save_api_keys(API_KEYS)
     return {"ok": True, "key": new_key}
 
 @router.delete("/keys/{key}", dependencies=[Depends(verify_admin)])
 async def delete_key(key: str):
-    from backend.core.config import API_KEYS
+    from backend.core.config import API_KEYS, save_api_keys
     if key in API_KEYS:
         API_KEYS.remove(key)
+        save_api_keys(API_KEYS)
     return {"ok": True}

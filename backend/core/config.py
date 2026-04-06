@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from typing import Dict, Set
 
@@ -26,8 +27,25 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
-# 在内存中存储管理的 API Keys（和单文件一样）
-API_KEYS = set(["sk-qwen-default-test-key"])
+API_KEYS_FILE = Path("data/api_keys.json")
+
+def load_api_keys() -> set:
+    if API_KEYS_FILE.exists():
+        try:
+            with open(API_KEYS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return set(data.get("keys", []))
+        except Exception:
+            pass
+    return set()
+
+def save_api_keys(keys: set):
+    API_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(API_KEYS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"keys": list(keys)}, f, indent=2)
+
+# 在内存中存储管理的 API Keys
+API_KEYS = load_api_keys()
 
 VERSION = "2.0.0"
 
