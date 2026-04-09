@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     ADMIN_KEY: str = os.getenv("ADMIN_KEY", "admin")
     REGISTER_SECRET: str = os.getenv("REGISTER_SECRET", "")
 
-    # 引擎模式：browser 或 httpx
-    ENGINE_MODE: str = os.getenv("ENGINE_MODE", "browser")
+    # 引擎模式：httpx（快速直连）或 browser（浏览器指纹，防封）
+    ENGINE_MODE: str = os.getenv("ENGINE_MODE", "httpx")
     # 浏览器引擎配置
     BROWSER_POOL_SIZE: int = int(os.getenv("BROWSER_POOL_SIZE", 4))
     MAX_INFLIGHT_PER_ACCOUNT: int = int(os.getenv("MAX_INFLIGHT", 4))

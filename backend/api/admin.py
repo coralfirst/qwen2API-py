@@ -361,6 +361,7 @@ async def get_settings():
     return {
         "version": "2.0.0",
         "max_inflight_per_account": backend_settings.MAX_INFLIGHT_PER_ACCOUNT,
+        "engine_mode": backend_settings.ENGINE_MODE,
         "model_aliases": {k: v for k, v in MODEL_MAP.items()},
     }
 
@@ -372,6 +373,8 @@ async def update_settings(data: dict, request: Request):
         value = int(data["max_inflight_per_account"])
         settings.MAX_INFLIGHT_PER_ACCOUNT = value
         request.app.state.account_pool.max_inflight = value
+    if "engine_mode" in data and data["engine_mode"] in ("httpx", "browser"):
+        settings.ENGINE_MODE = data["engine_mode"]
     if "model_aliases" in data:
         MODEL_MAP.clear()
         MODEL_MAP.update(data["model_aliases"])
