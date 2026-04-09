@@ -245,7 +245,39 @@ curl http://127.0.0.1:7860/v1/chat/completions \
 
 ## 快速开始
 
-### 方式一：本地运行（推荐）
+### 推荐：Docker Compose 一键部署
+
+```bash
+cp .env.example .env
+# 必改：ADMIN_KEY
+# 按需修改：BROWSER_POOL_SIZE / MAX_INFLIGHT / ACCOUNT_MIN_INTERVAL_MS
+
+docker compose up -d --build
+```
+
+启动后：
+- WebUI / API: `http://127.0.0.1:7860`
+- 健康检查: `GET /healthz`
+- 就绪检查: `GET /readyz`
+
+### 推荐安全默认值（单账号）
+
+- `ENGINE_MODE=hybrid`
+- `BROWSER_POOL_SIZE=2`
+- `MAX_INFLIGHT=1`
+- `ACCOUNT_MIN_INTERVAL_MS=1200`
+- `REQUEST_JITTER_MIN_MS=120`
+- `REQUEST_JITTER_MAX_MS=360`
+- `MAX_RETRIES=2`
+- `TOOL_MAX_RETRIES=2`
+- `EMPTY_RESPONSE_RETRIES=1`
+
+说明：
+- 主聊天请求、建会话、删会话现在都优先走浏览器环境，httpx 只做兜底。
+- 上述默认值偏保守，目标是降低单账号在 Claude Code 工具链下的自动化痕迹与封控风险。
+- `data/` 与 `logs/` 需要持久化挂载，账号、用户和配置都保存在这里。
+
+### 本地开发启动
 
 **前置环境要求**：
 - Python 3.10+

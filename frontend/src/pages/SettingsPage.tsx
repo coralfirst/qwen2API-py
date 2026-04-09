@@ -79,7 +79,7 @@ export default function SettingsPage() {
 
   const baseUrl = API_BASE || `http://${window.location.hostname}:7860`
 
-  const curlExample = `# 流式对话
+  const curlExample = `# OpenAI 流式对话
 curl ${baseUrl}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
@@ -89,12 +89,14 @@ curl ${baseUrl}/v1/chat/completions \\
     "stream": true
   }'
 
-# Anthropic 格式
+# Anthropic 格式（Claude Code / SDK）
 curl ${baseUrl}/anthropic/v1/messages \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "x-api-key: YOUR_API_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
   -d '{
-    "model": "qwen3.6-plus",
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
     "messages": [{"role": "user", "content": "你好"}]
   }'
 
@@ -106,7 +108,7 @@ curl ${baseUrl}/v1beta/models/qwen3.6-plus:generateContent \\
     "contents": [{"parts": [{"text": "你好"}]}]
   }'
 
-# 图片生成（标准接口）
+# 图片生成（标准 OpenAI Images 接口，推荐）
 curl ${baseUrl}/v1/images/generations \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
@@ -114,20 +116,21 @@ curl ${baseUrl}/v1/images/generations \\
     "model": "dall-e-3",
     "prompt": "一只赛博朋克风格的猫，霓虹灯背景，超写实",
     "n": 1,
-    "size": "1024x1024"
+    "size": "1024x1024",
+    "response_format": "url"
   }'
 
-# 图片生成（Chat 意图识别，自动路由）
+# 图片生成（Chat 意图识别自动路由，返回内容中附带图片链接）
 curl ${baseUrl}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -d '{
     "model": "qwen3.6-plus",
     "stream": false,
-    "messages": [{"role": "user", "content": "帮我画一张星空下的雪山，写实风格"}]
+    "messages": [{"role": "user", "content": "帮我生成一张星空下的雪山图片，写实风格"}]
   }'
 
-# 视频生成（Chat 意图识别，链路预留）
+# 视频生成（仍为预留链路，先不要作为稳定能力依赖）
 curl ${baseUrl}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_API_KEY" \\

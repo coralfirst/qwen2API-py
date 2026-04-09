@@ -3,8 +3,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Optional
-from backend.core.browser_engine import BrowserEngine
+from typing import Optional, Any
 from backend.core.account_pool import AccountPool, Account
 from backend.core.config import settings
 from backend.services.auth_resolver import AuthResolver
@@ -28,7 +27,7 @@ def _is_banned_error(error_msg: str) -> bool:
     return any(keyword in msg for keyword in BANNED_KEYWORDS)
 
 class QwenClient:
-    def __init__(self, engine: BrowserEngine, account_pool: AccountPool):
+    def __init__(self, engine: Any, account_pool: AccountPool):
         self.engine = engine
         self.account_pool = account_pool
         self.auth_resolver = AuthResolver(account_pool)
@@ -39,7 +38,25 @@ class QwenClient:
         body = {"title": f"api_{ts}", "models": [model], "chat_mode": "normal",
                 "chat_type": chat_type, "timestamp": ts}
 
-        r = await self.engine.api_call("POST", "/api/v2/chats/new", token, body)
+        # chat 生命周期接口也优先走浏览器，更贴近真人使用路径
+        if hasattr(self.engine, "browser_engine") and getattr(self.engine, "browser_engine") is not None:
+            r = await self.engine.browser_engine.api_call("POST", "/api/v2/chats/new", token, body)
+            status = r.get("status")
+            body_text = (r.get("body") or "").lower()
+            should_fallback = (
+                status == 0
+                or status in (401, 403, 429)
+                or "waf" in body_text
+                or "<!doctype" in body_text
+                or "forbidden" in body_text
+                or "unauthorized" in body_text
+            )
+            if should_fallback:
+                preview = (r.get("body") or "")[:160].replace("\n", "\\n")
+                log.warning(f"[QwenClient] create_chat 浏览器失败，回退到默认引擎 status={status} body_preview={preview!r}")
+                r = await self.engine.api_call("POST", "/api/v2/chats/new", token, body)
+        else:
+            r = await self.engine.api_call("POST", "/api/v2/chats/new", token, body)
         if r["status"] == 429:
             raise Exception("429 Too Many Requests (Engine Queue Full)")
 
@@ -66,6 +83,23 @@ class QwenClient:
             raise Exception(f"create_chat parse error: {e}, body={body_text[:200]}")
 
     async def delete_chat(self, token: str, chat_id: str):
+        if hasattr(self.engine, "browser_engine") and getattr(self.engine, "browser_engine") is not None:
+            r = await self.engine.browser_engine.api_call("DELETE", f"/api/v2/chats/{chat_id}", token)
+            status = r.get("status")
+            body_text = (r.get("body") or "").lower()
+            should_fallback = (
+                status == 0
+                or status in (401, 403, 429)
+                or "waf" in body_text
+                or "<!doctype" in body_text
+                or "forbidden" in body_text
+                or "unauthorized" in body_text
+            )
+            if should_fallback:
+                preview = (r.get("body") or "")[:160].replace("\n", "\\n")
+                log.warning(f"[QwenClient] delete_chat 浏览器失败，回退到默认引擎 chat_id={chat_id} status={status} body_preview={preview!r}")
+                await self.engine.api_call("DELETE", f"/api/v2/chats/{chat_id}", token)
+            return
         await self.engine.api_call("DELETE", f"/api/v2/chats/{chat_id}", token)
 
     async def verify_token(self, token: str) -> bool:
@@ -153,8 +187,8 @@ class QwenClient:
             "thinking_format": "summary",
             "auto_search": not has_custom_tools,
             "code_interpreter": not has_custom_tools,
-            "function_calling": not has_custom_tools,
-            "plugins_enabled": not has_custom_tools,
+            "function_calling": bool(has_custom_tools and settings.NATIVE_TOOL_PASSTHROUGH),
+            "plugins_enabled": False if has_custom_tools else True,
         }
         return {
             "stream": True, "version": "2.1", "incremental_output": True,
@@ -234,9 +268,22 @@ class QwenClient:
                 
             chat_id: Optional[str] = None
             try:
+                log.info(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 获取账号：account={acc.email} model={model} tools={has_custom_tools} exclude={sorted(exclude)}")
+                # 本地节流：同账号两次上游请求之间保持最小间隔，降低自动化痕迹
+                min_interval = max(0, settings.ACCOUNT_MIN_INTERVAL_MS) / 1000.0
+                now = time.time()
+                wait_s = max(0.0, (acc.last_request_started + min_interval) - now)
+                if wait_s > 0:
+                    log.info(f"[节流] 账号冷却等待：account={acc.email} wait={wait_s:.2f}s")
+                    await asyncio.sleep(wait_s)
                 chat_id = await self.create_chat(acc.token, model)
                 self.active_chat_ids.add(chat_id)
                 payload = self._build_payload(chat_id, model, content, has_custom_tools)
+                log.info(
+                    f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 已创建会话：account={acc.email} chat_id={chat_id} "
+                    f"engine={self.engine.__class__.__name__} function_calling={payload['messages'][0]['feature_config'].get('function_calling')} "
+                    f"thinking_enabled={payload['messages'][0]['feature_config'].get('thinking_enabled')}"
+                )
 
                 # First yield the chat_id and account to the consumer
                 yield {"type": "meta", "chat_id": chat_id, "acc": acc}
@@ -245,10 +292,15 @@ class QwenClient:
                 # 始终用流式模式：可实时发现 NativeBlock 并早期中止，不用等 3 分钟
                 async for chunk_result in self.engine.fetch_chat(acc.token, chat_id, payload, buffered=False):
                     if chunk_result.get("status") == 429:
-                        raise Exception("Engine Queue Full")
+                        log.warning(f"[本地背压 {attempt+1}/{settings.MAX_RETRIES}] 引擎队列已满：account={acc.email} chat_id={chat_id}")
+                        raise Exception("local_backpressure: engine queue full")
                     if chunk_result.get("status") != 200 and chunk_result.get("status") != "streamed":
+                        log.warning(
+                            f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 上游分片异常：account={acc.email} chat_id={chat_id} "
+                            f"status={chunk_result.get('status')} body_preview={(chunk_result.get('body', '')[:120]).replace(chr(10), '\\n')!r}"
+                        )
                         raise Exception(f"HTTP {chunk_result['status']}: {chunk_result.get('body', '')[:100]}")
-                    
+
                     if "chunk" in chunk_result:
                         buffer += chunk_result["chunk"]
                         while "\n\n" in buffer:
@@ -263,6 +315,7 @@ class QwenClient:
                     events = self.parse_sse_chunk(buffer)
                     for evt in events:
                         yield {"type": "event", "event": evt}
+                log.info(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 流式完成：account={acc.email} chat_id={chat_id} buffered_chars={len(buffer)}")
                 self.active_chat_ids.discard(chat_id)
                 return
 
@@ -271,33 +324,38 @@ class QwenClient:
                     self.active_chat_ids.discard(chat_id)  # type: ignore[arg-type]
                 err_msg = str(e).lower()
                 should_save = False
-                if "429" in err_msg or "rate limit" in err_msg or "too many" in err_msg:
+                if "local_backpressure" in err_msg or "engine queue full" in err_msg:
+                    acc.last_error = str(e)
+                    log.warning(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 本地背压：account={acc.email} error={e}")
+                elif "429" in err_msg or "rate limit" in err_msg or "too many" in err_msg:
                     self.account_pool.mark_rate_limited(acc, error_message=str(e))
                     exclude.add(acc.email)
+                    log.warning(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 标记为限流：account={acc.email} error={e}")
                 elif _is_pending_activation_error(err_msg):
                     self.account_pool.mark_invalid(acc, reason="pending_activation", error_message=str(e))
                     exclude.add(acc.email)
                     acc.activation_pending = True
                     should_save = True
+                    log.warning(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 标记为待激活：account={acc.email} error={e}")
                     asyncio.create_task(self.auth_resolver.auto_heal_account(acc))
                 elif _is_banned_error(err_msg):
                     self.account_pool.mark_invalid(acc, reason="banned", error_message=str(e))
                     exclude.add(acc.email)
+                    log.warning(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 标记为封禁：account={acc.email} error={e}")
                 elif _is_auth_error(err_msg):
                     self.account_pool.mark_invalid(acc, reason="auth_error", error_message=str(e))
                     exclude.add(acc.email)
+                    log.warning(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 标记为鉴权失败：account={acc.email} error={e}")
                     asyncio.create_task(self.auth_resolver.auto_heal_account(acc))
                 else:
-                    # 泛化/瞬态错误（JS eval 失败、网络抖动等）
-                    # 不排除账号，避免单账号情况下重试无可用账号
                     acc.last_error = str(e)
-                    log.warning(f"[Retry] transient error, will retry with same account pool: {e}")
+                    log.warning(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 瞬态错误：account={acc.email} error={e}")
 
                 if should_save:
                     await self.account_pool.save()
 
                 self.account_pool.release(acc)
-                log.warning(f"[Retry {attempt+1}/{settings.MAX_RETRIES}] Account {acc.email} failed: {e}. Retrying...")
+                log.warning(f"[重试 {attempt+1}/{settings.MAX_RETRIES}] 账号失败，准备重试：account={acc.email} error={e}")
                 
         raise Exception(f"All {settings.MAX_RETRIES} attempts failed. Please check upstream accounts.")
 

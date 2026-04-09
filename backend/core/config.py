@@ -14,16 +14,24 @@ class Settings(BaseSettings):
     ADMIN_KEY: str = os.getenv("ADMIN_KEY", "admin")
     REGISTER_SECRET: str = os.getenv("REGISTER_SECRET", "")
 
-    # 引擎模式：httpx（快速直连）或 browser（浏览器指纹，防封）
-    ENGINE_MODE: str = os.getenv("ENGINE_MODE", "httpx")
+    # 引擎模式：httpx（快速直连）、browser（浏览器指纹，防封）或 hybrid（混合）
+    ENGINE_MODE: str = os.getenv("ENGINE_MODE", "hybrid")
+    NATIVE_TOOL_PASSTHROUGH: bool = os.getenv("NATIVE_TOOL_PASSTHROUGH", "true").lower() in ("1", "true", "yes", "on")
     # 浏览器引擎配置
-    BROWSER_POOL_SIZE: int = int(os.getenv("BROWSER_POOL_SIZE", 4))
-    MAX_INFLIGHT_PER_ACCOUNT: int = int(os.getenv("MAX_INFLIGHT", 4))
+    BROWSER_POOL_SIZE: int = int(os.getenv("BROWSER_POOL_SIZE", 2))
+    MAX_INFLIGHT_PER_ACCOUNT: int = int(os.getenv("MAX_INFLIGHT", 1))
     STREAM_KEEPALIVE_INTERVAL: int = int(os.getenv("STREAM_KEEPALIVE_INTERVAL", 5))
 
     # 容灾与限流
-    MAX_RETRIES: int = 3
-    RATE_LIMIT_COOLDOWN: int = 600
+    MAX_RETRIES: int = 2
+    TOOL_MAX_RETRIES: int = 2
+    EMPTY_RESPONSE_RETRIES: int = 1
+    ACCOUNT_MIN_INTERVAL_MS: int = int(os.getenv("ACCOUNT_MIN_INTERVAL_MS", 1200))
+    REQUEST_JITTER_MIN_MS: int = int(os.getenv("REQUEST_JITTER_MIN_MS", 120))
+    REQUEST_JITTER_MAX_MS: int = int(os.getenv("REQUEST_JITTER_MAX_MS", 360))
+    RATE_LIMIT_BASE_COOLDOWN: int = int(os.getenv("RATE_LIMIT_BASE_COOLDOWN", 600))
+    RATE_LIMIT_MAX_COOLDOWN: int = int(os.getenv("RATE_LIMIT_MAX_COOLDOWN", 3600))
+    RATE_LIMIT_COOLDOWN: int = RATE_LIMIT_BASE_COOLDOWN
 
     # 数据文件路径
     ACCOUNTS_FILE: str = os.getenv("ACCOUNTS_FILE", str(DATA_DIR / "accounts.json"))

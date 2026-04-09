@@ -1,13 +1,11 @@
 """
-httpx_engine.py — 用 httpx 直连 Qwen API，替代浏览器引擎
-优点：无编码问题、支持流式早期中止、启动无需等待浏览器
+httpx_engine.py — 用 curl_cffi 直连 Qwen API（Chrome TLS 指纹）
+优点：TLS 指纹与真实 Chrome 一致，无编码问题，支持流式早期中止
 """
 
 import asyncio
 import json
 import logging
-
-import httpx
 
 log = logging.getLogger("qwen2api.httpx_engine")
 
@@ -19,12 +17,19 @@ _HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Referer": "https://chat.qwen.ai/",
     "Origin": "https://chat.qwen.ai",
-    "Connection": "keep-alive",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
 }
+
+_IMPERSONATE = "chrome124"
 
 
 class HttpxEngine:
-    """Direct httpx engine — same interface as BrowserEngine."""
+    """Direct curl_cffi engine — Chrome TLS fingerprint, same interface as BrowserEngine."""
 
     def __init__(self, pool_size: int = 3, base_url: str = BASE_URL):
         self.base_url = base_url
@@ -34,7 +39,7 @@ class HttpxEngine:
     async def start(self):
         self._started = True
         self._ready.set()
-        log.info("[HttpxEngine] 已启动（直连模式，无需浏览器）")
+        log.info("[HttpxEngine] 已启动（curl_cffi Chrome指纹直连模式）")
 
     async def stop(self):
         self._started = False
@@ -44,22 +49,21 @@ class HttpxEngine:
         return {**_HEADERS, "Authorization": f"Bearer {token}"}
 
     async def api_call(self, method: str, path: str, token: str, body: dict = None) -> dict:
+        from curl_cffi.requests import AsyncSession
         url = self.base_url + path
         headers = {**self._auth_headers(token), "Content-Type": "application/json"}
+        data = json.dumps(body, ensure_ascii=False).encode() if body else None
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.request(
-                    method, url,
-                    headers=headers,
-                    content=json.dumps(body, ensure_ascii=False).encode() if body else None,
-                )
+            async with AsyncSession(impersonate=_IMPERSONATE, timeout=30) as client:
+                resp = await client.request(method, url, headers=headers, data=data)
             return {"status": resp.status_code, "body": resp.text}
         except Exception as e:
             log.error(f"[HttpxEngine] api_call error: {e}")
             return {"status": 0, "body": str(e)}
 
     async def fetch_chat(self, token: str, chat_id: str, payload: dict, buffered: bool = False):
-        """Stream Qwen SSE; yield chunks as they arrive. Abort early on NativeBlock."""
+        """Stream Qwen SSE via curl_cffi with Chrome TLS fingerprint."""
+        from curl_cffi.requests import AsyncSession
         url = self.base_url + f"/api/v2/chat/completions?chat_id={chat_id}"
         headers = {
             **self._auth_headers(token),
@@ -69,22 +73,20 @@ class HttpxEngine:
         body_bytes = json.dumps(payload, ensure_ascii=False).encode()
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=1800)) as client:
-                async with client.stream("POST", url, headers=headers, content=body_bytes) as resp:
+            async with AsyncSession(impersonate=_IMPERSONATE, timeout=1800) as client:
+                async with client.stream("POST", url, headers=headers, data=body_bytes) as resp:
                     if resp.status_code != 200:
-                        text = await resp.aread()
-                        yield {"status": resp.status_code, "body": text.decode(errors="replace")[:2000]}
+                        body_chunks = []
+                        async for chunk in resp.aiter_content():
+                            body_chunks.append(chunk)
+                        body_text = b"".join(body_chunks).decode(errors="replace")[:2000]
+                        yield {"status": resp.status_code, "body": body_text}
                         return
 
-                    buf = ""
-                    async for raw_chunk in resp.aiter_bytes():
-                        chunk = raw_chunk.decode("utf-8", errors="replace")
-                        buf += chunk
-                        yield {"status": "streamed", "chunk": chunk}
+                    async for chunk in resp.aiter_content():
+                        decoded = chunk.decode("utf-8", errors="replace")
+                        yield {"status": "streamed", "chunk": decoded}
 
-        except httpx.TimeoutException as e:
-            log.warning(f"[HttpxEngine] timeout: {e}")
-            yield {"status": 0, "body": f"Timeout: {e}"}
         except Exception as e:
             log.error(f"[HttpxEngine] fetch_chat error: {e}")
             yield {"status": 0, "body": str(e)}

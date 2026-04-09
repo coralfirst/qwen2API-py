@@ -20,6 +20,7 @@ from backend.core.config import settings
 from backend.core.database import AsyncJsonDB
 from backend.core.browser_engine import BrowserEngine
 from backend.core.httpx_engine import HttpxEngine
+from backend.core.hybrid_engine import HybridEngine
 from backend.core.account_pool import AccountPool
 from backend.services.qwen_client import QwenClient
 from backend.api import admin, v1_chat, probes, anthropic, gemini, embeddings, images
@@ -36,14 +37,22 @@ async def lifespan(app: FastAPI):
     app.state.users_db = AsyncJsonDB(settings.USERS_FILE, default_data=[])
     app.state.captures_db = AsyncJsonDB(settings.CAPTURES_FILE, default_data=[])
 
+    browser_engine = BrowserEngine(pool_size=settings.BROWSER_POOL_SIZE)
+    httpx_engine = HttpxEngine(base_url="https://chat.qwen.ai")
+
     if settings.ENGINE_MODE == "httpx":
-        engine = HttpxEngine(base_url="https://chat.qwen.ai")
+        engine = httpx_engine
         log.info("引擎模式: httpx 直连")
+    elif settings.ENGINE_MODE == "hybrid":
+        engine = HybridEngine(browser_engine, httpx_engine)
+        log.info("引擎模式: Hybrid (api_call=httpx优先, fetch_chat=browser)")
     else:
-        engine = BrowserEngine(pool_size=settings.BROWSER_POOL_SIZE)
+        engine = browser_engine
         log.info("引擎模式: Camoufox 浏览器")
 
-    app.state.browser_engine = engine
+    app.state.browser_engine = browser_engine
+    app.state.httpx_engine = httpx_engine
+    app.state.gateway_engine = engine
     app.state.account_pool = AccountPool(app.state.accounts_db, max_inflight=settings.MAX_INFLIGHT_PER_ACCOUNT)
     app.state.qwen_client = QwenClient(engine, app.state.account_pool)
 
@@ -55,7 +64,7 @@ async def lifespan(app: FastAPI):
     yield
 
     log.info("Shutting down gateway...")
-    await app.state.browser_engine.stop()
+    await app.state.gateway_engine.stop()
 
 app = FastAPI(title="qwen2API Enterprise Gateway", version="2.0.0", lifespan=lifespan)
 
