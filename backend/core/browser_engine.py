@@ -42,11 +42,20 @@ async (args) => {
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
+        let buf = '';
+        const FLUSH_CHARS = 400;   // 每攒够 400 字符发一次，减少 IPC 调用次数
         while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            await send_chunk(args.chat_id, chunk);
+            if (done) {
+                if (buf) await send_chunk(args.chat_id, buf);
+                break;
+            }
+            buf += decoder.decode(value, { stream: true });
+            // 遇到完整 SSE 消息边界（\n\n）或缓冲够了就立刻发送
+            if (buf.includes('\n\n') && buf.length >= FLUSH_CHARS) {
+                await send_chunk(args.chat_id, buf);
+                buf = '';
+            }
         }
         clearTimeout(timer);
         return { status: 200, body: '__DONE__' };
@@ -237,7 +246,7 @@ class BrowserEngine:
             else:
                 self._pages.put_nowait(page)
 
-    async def fetch_chat(self, token: str, chat_id: str, payload: dict):
+    async def fetch_chat(self, token: str, chat_id: str, payload: dict, buffered: bool = False):
         await asyncio.wait_for(self._ready.wait(), timeout=300)
         if not self._started:
             yield {"status": 0, "body": "Browser engine failed to start"}
@@ -252,6 +261,32 @@ class BrowserEngine:
 
         needs_refresh = False
         url = f'/api/v2/chat/completions?chat_id={chat_id}'
+
+        # ── 缓冲模式（工具调用）：一次 JS evaluate，一次 IPC，最快 ──────────
+        if buffered:
+            try:
+                res = await asyncio.wait_for(
+                    page.evaluate(JS_STREAM_FULL, {"url": url, "token": token, "payload": payload}),
+                    timeout=1800,
+                )
+                if res.get("status") != 200:
+                    log.warning(f"[Browser] buffered JS Error: {res.get('body','')[:100]}")
+                    needs_refresh = True
+                yield res
+            except asyncio.TimeoutError:
+                needs_refresh = True
+                yield {"status": 0, "body": "Timeout"}
+            except Exception as e:
+                needs_refresh = True
+                yield {"status": 0, "body": str(e)}
+            finally:
+                if needs_refresh:
+                    asyncio.create_task(self._refresh_page_and_return(page))
+                else:
+                    self._pages.put_nowait(page)
+            return
+
+        # ── 流式模式（普通对话）：send_chunk IPC 实时转发 ────────────────────
         queue: asyncio.Queue = asyncio.Queue()
         self.stream_queues[chat_id] = queue
         try:

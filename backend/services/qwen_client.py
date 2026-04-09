@@ -242,7 +242,9 @@ class QwenClient:
                 yield {"type": "meta", "chat_id": chat_id, "acc": acc}
 
                 buffer = ""
-                async for chunk_result in self.engine.fetch_chat(acc.token, chat_id, payload):
+                # 工具调用用缓冲模式（一次 IPC，等同旧版本速度）
+                # 普通对话用流式模式（实时逐 chunk 转发）
+                async for chunk_result in self.engine.fetch_chat(acc.token, chat_id, payload, buffered=has_custom_tools):
                     if chunk_result.get("status") == 429:
                         raise Exception("Engine Queue Full")
                     if chunk_result.get("status") != 200 and chunk_result.get("status") != "streamed":
