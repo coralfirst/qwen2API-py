@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Button } from "../components/ui/button"
-import { Trash2, Plus, RefreshCw, Bot, ShieldCheck, MailWarning } from "lucide-react"
+import { Trash2, Plus, RefreshCw, Bot, ShieldCheck, MailWarning, CloudDownload } from "lucide-react"
 import { toast } from "sonner"
 import { getAuthHeader } from "../lib/auth"
 import { API_BASE } from "../lib/api"
@@ -76,6 +76,7 @@ export default function AccountsPage() {
   const [registerUnlocked, setRegisterUnlocked] = useState(false)
   const [verifying, setVerifying] = useState<string | null>(null)
   const [verifyingAll, setVerifyingAll] = useState(false)
+  const [syncing, setSyncing] = useState(false)
 
   // 邮箱+密码字段同时匹配时解锁注册功能
   useEffect(() => {
@@ -217,6 +218,25 @@ export default function AccountsPage() {
       .finally(() => setVerifyingAll(false))
   }
 
+  const handleSyncRemote = () => {
+    setSyncing(true)
+    const id = toast.loading("\u6b63\u5728\u540c\u6b65\u8fdc\u7aef\u8d26\u53f7...")
+    fetch(`${API_BASE}/api/admin/accounts/sync`, {
+      method: "POST",
+      headers: getAuthHeader(),
+    }).then(res => res.json())
+      .then(data => {
+        if (data.ok) {
+          toast.success(data.message || "\u540c\u6b65\u6210\u529f", { id })
+          fetchAccounts()
+        } else {
+          toast.error(data.error || "\u540c\u6b65\u5931\u8d25", { id })
+        }
+      })
+      .catch(() => toast.error("\u540c\u6b65\u8bf7\u6c42\u5931\u8d25", { id }))
+      .finally(() => setSyncing(false))
+  }
+
   const handleActivate = (targetEmail: string) => {
     const id = toast.loading(`\u6b63\u5728\u6fc0\u6d3b ${targetEmail}...`)
     fetch(`${API_BASE}/api/admin/accounts/${encodeURIComponent(targetEmail)}/activate`, {
@@ -249,6 +269,9 @@ export default function AccountsPage() {
           </Button>
           <Button variant="outline" onClick={() => { fetchAccounts(); toast.success("\u8d26\u53f7\u5217\u8868\u5df2\u5237\u65b0") }}>
             <RefreshCw className="mr-2 h-4 w-4" /> {"\u5237\u65b0\u72b6\u6001"}
+          </Button>
+          <Button variant="outline" onClick={handleSyncRemote} disabled={syncing}>
+            <CloudDownload className={`mr-2 h-4 w-4 ${syncing ? 'animate-bounce' : ''}`} /> {"\u540c\u6b65"}
           </Button>
           {registerUnlocked && (
             <Button variant="default" onClick={handleAutoRegister} disabled={registering}>
