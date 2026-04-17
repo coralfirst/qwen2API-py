@@ -15,8 +15,8 @@ from pathlib import Path
 WORKSPACE_DIR = Path(__file__).parent.absolute()
 BACKEND_DIR = WORKSPACE_DIR / "backend"
 FRONTEND_DIR = WORKSPACE_DIR / "frontend"
-LOGS_DIR = "/tmp/logs"
-DATA_DIR = "/tmp/data"
+LOGS_DIR = Path("/tmp/logs")
+DATA_DIR = Path("/tmp/data")
 
 
 def ensure_dirs():
