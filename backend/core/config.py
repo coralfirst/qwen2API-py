@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 from typing import Dict, Set
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path("/tmp/data")
 
 class Settings(BaseSettings):
     # 服务配置
