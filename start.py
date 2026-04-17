@@ -20,8 +20,8 @@ DATA_DIR = "/tmp/data"
 
 
 def ensure_dirs():
-    LOGS_DIR.mkdir(exist_ok=True)
-    DATA_DIR.mkdir(exist_ok=True)
+    LOGS_DIR.mkdir(exist_ok=True, parents=True)
+    DATA_DIR.mkdir(exist_ok=True, parents=True)
 
 
 def check_python():
